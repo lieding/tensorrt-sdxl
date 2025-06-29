@@ -108,78 +108,10 @@ class Optimizer():
         if return_onnx:
             return onnx_graph
 
-def get_path(version, pipeline, controlnets=None):
-    if controlnets is not None:
-        return ["lllyasviel/sd-controlnet-" + modality for modality in controlnets]
-    
-    if version == "1.4":
-        if pipeline.is_inpaint():
-            return "runwayml/stable-diffusion-inpainting"
-        else:
-            return "CompVis/stable-diffusion-v1-4"
-    elif version == "1.5":
-        if pipeline.is_inpaint():
-            return "runwayml/stable-diffusion-inpainting"
-        else:
-            return "runwayml/stable-diffusion-v1-5"
-    elif version == 'dreamshaper-7':
-        return 'Lykon/dreamshaper-7'
-    elif version == "2.0-base":
-        if pipeline.is_inpaint():
-            return "stabilityai/stable-diffusion-2-inpainting"
-        else:
-            return "stabilityai/stable-diffusion-2-base"
-    elif version == "2.0":
-        if pipeline.is_inpaint():
-            return "stabilityai/stable-diffusion-2-inpainting"
-        else:
-            return "stabilityai/stable-diffusion-2"
-    elif version == "2.1":
-        return "stabilityai/stable-diffusion-2-1"
-    elif version == "2.1-base":
-        return "stabilityai/stable-diffusion-2-1-base"
-    elif version == 'xl-1.0':
-        if pipeline.is_sd_xl_base():
-            return "stabilityai/stable-diffusion-xl-base-1.0"
-        elif pipeline.is_sd_xl_refiner():
-            return "stabilityai/stable-diffusion-xl-refiner-1.0"
-        else:
-            raise ValueError(f"Unsupported SDXL 1.0 pipeline {pipeline.name}")
-    elif version == 'xl-turbo':
-        if pipeline.is_sd_xl_base():
-            return "stabilityai/sdxl-turbo"
-        else:
-            raise ValueError(f"Unsupported SDXL Turbo pipeline {pipeline.name}")
-    else:
-        raise ValueError(f"Incorrect version {version}")
-
-def get_clip_embedding_dim(version, pipeline):
-    if version in ("1.4", "1.5", "dreamshaper-7"):
-        return 768
-    elif version in ("2.0", "2.0-base", "2.1", "2.1-base"):
-        return 1024
-    elif version in ("xl-1.0", "xl-turbo") and pipeline.is_sd_xl_base():
-        return 768
-    else:
-        raise ValueError(f"Invalid version {version} + pipeline {pipeline}")
-
-def get_clipwithproj_embedding_dim(version, pipeline):
-    if version in ("xl-1.0", "xl-turbo"):
-        return 1280
-    else:
-        raise ValueError(f"Invalid version {version} + pipeline {pipeline}")
-
-def get_unet_embedding_dim(version, pipeline):
-    if version in ("1.4", "1.5", "dreamshaper-7"):
-        return 768
-    elif version in ("2.0", "2.0-base", "2.1", "2.1-base"):
-        return 1024
-    elif version in ("xl-1.0", "xl-turbo") and pipeline.is_sd_xl_base():
-        return 2048
-    elif version in ("xl-1.0", "xl-turbo") and pipeline.is_sd_xl_refiner():
-        return 1280
-    else:
-        raise ValueError(f"Invalid version {version} + pipeline {pipeline}")
+# get_path function removed as model paths are now hardcoded for SDXL base.
+# get_clip_embedding_dim function removed.
+# get_clipwithproj_embedding_dim function removed.
+# get_unet_embedding_dim function removed.
 
 # FIXME after serialization support for torch.compile is added
 def get_checkpoint_dir(framework_model_dir, version, pipeline, subfolder, torch_inference):
@@ -241,8 +173,7 @@ class LoraLoader(LoraLoaderMixin):
 
 class BaseModel():
     def __init__(self,
-        version='1.5',
-        pipeline=None,
+        pipeline=None, # pipeline is PIPELINE_TYPE enum instance
         device='cuda',
         hf_token='',
         verbose=True,
@@ -250,16 +181,30 @@ class BaseModel():
         fp16=False,
         max_batch_size=16,
         text_maxlen=77,
-        embedding_dim=768,
+        embedding_dim=768, # Default, overridden by UNetXLModel
     ):
+        """
+        Base class for ONNX / TRT model wrapper classes in this demo.
 
+        Args:
+            pipeline (PIPELINE_TYPE): Enum representing the pipeline type (e.g., XL_BASE).
+            device (str): PyTorch device.
+            hf_token (str): HuggingFace API token.
+            verbose (bool): Enable verbose logging.
+            framework_model_dir (str): Directory for HF saved models.
+            fp16 (bool): Use FP16 precision.
+            max_batch_size (int): Max batch size for the model.
+            text_maxlen (int): Max length for text inputs.
+            embedding_dim (int): Embedding dimension for text models.
+        """
         self.name = self.__class__.__name__
-        self.pipeline = pipeline.name
-        self.version = version
-        self.path = get_path(version, pipeline)
+        self.pipeline = pipeline.name # pipeline is PIPELINE_TYPE enum instance
+        self.sdxl_model_id = "stabilityai/stable-diffusion-xl-base-1.0" # Hardcoded for SDXL Base
+
         self.device = device
         self.hf_token = hf_token
-        self.hf_safetensor = not (pipeline.is_inpaint() and version in ("1.4", "1.5"))
+        # self.hf_safetensor = not (pipeline.is_inpaint() and version in ("1.4", "1.5")) # Simplified, assume True for SDXL
+        self.hf_safetensor = True
         self.verbose = verbose
         self.framework_model_dir = framework_model_dir
 
@@ -753,10 +698,13 @@ class UNetXLModel(BaseModel):
         lora_alphas = None,
         do_classifier_free_guidance = False,
     ):
-        super(UNetXLModel, self).__init__(version, pipeline, device=device, hf_token=hf_token, verbose=verbose, framework_model_dir=framework_model_dir, fp16=fp16, max_batch_size=max_batch_size, text_maxlen=text_maxlen, embedding_dim=get_unet_embedding_dim(version, pipeline))
+        # Version parameter removed from super call.
+        # pipeline is PIPELINE_TYPE.XL_BASE
+        # embedding_dim for SDXL UNet is 2048.
+        super(UNetXLModel, self).__init__(pipeline=pipeline, device=device, hf_token=hf_token, verbose=verbose, framework_model_dir=framework_model_dir, fp16=fp16, max_batch_size=max_batch_size, text_maxlen=text_maxlen, embedding_dim=2048)
         self.subfolder = 'unet'
-        self.unet_dim = (9 if pipeline.is_inpaint() else 4)
-        self.time_dim = (5 if pipeline.is_sd_xl_refiner() else 6)
+        self.unet_dim = 4 # For SDXL Base (not inpaint)
+        self.time_dim = 6 # For SDXL Base (not refiner)
         self.lora_scales = lora_scales
         self.lora_dict = lora_dict
         self.lora_alphas = lora_alphas
@@ -764,12 +712,14 @@ class UNetXLModel(BaseModel):
 
     def get_model(self, torch_inference=''):
         model_opts = {'variant': 'fp16', 'torch_dtype': torch.float16} if self.fp16 else {}
-        unet_model_dir = get_checkpoint_dir(self.framework_model_dir, self.version, self.pipeline, self.subfolder, torch_inference)
+        # Use "xl-1.0" as a fixed version string for checkpoint directory naming.
+        # self.pipeline is already the string name e.g. "XL_BASE"
+        unet_model_dir = get_checkpoint_dir(self.framework_model_dir, "xl-1.0", self.pipeline, self.subfolder, torch_inference)
         if not os.path.exists(unet_model_dir):
-            model = UNet2DConditionModel.from_pretrained(self.path,
+            model = UNet2DConditionModel.from_pretrained(self.sdxl_model_id, # Use hardcoded sdxl_model_id
                 subfolder=self.subfolder,
-                use_safetensors=self.hf_safetensor,
-                use_auth_token=self.hf_token,
+                use_safetensors=self.hf_safetensor, # This is now True for SDXL
+                token=self.hf_token, # from_pretrained uses 'token' not 'use_auth_token' for newer transformers
                 **model_opts).to(self.device)
             # Use default attention processor for ONNX export
             if not torch_inference:
@@ -965,15 +915,4 @@ class VAEEncoderModel(BaseModel):
         return torch.randn(batch_size, 3, image_height, image_width, dtype=torch.float32, device=self.device)
 
 
-def make_tokenizer(version, pipeline, hf_token, framework_model_dir, subfolder="tokenizer", **kwargs):
-    tokenizer_model_dir = get_checkpoint_dir(framework_model_dir, version, pipeline.name, subfolder, '')
-    if not os.path.exists(tokenizer_model_dir):
-        model = CLIPTokenizer.from_pretrained(get_path(version, pipeline),
-                subfolder=subfolder,
-                use_safetensors=pipeline.is_sd_xl(),
-                use_auth_token=hf_token)
-        model.save_pretrained(tokenizer_model_dir)
-    else:
-        print(f"[I] Load tokenizer pytorch model from: {tokenizer_model_dir}")
-        model = CLIPTokenizer.from_pretrained(tokenizer_model_dir)
-    return model
+# make_tokenizer function removed as tokenizers are loaded directly in StableDiffusionPipeline.loadEngines
