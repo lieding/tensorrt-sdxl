@@ -114,8 +114,8 @@ class Optimizer():
 # get_unet_embedding_dim function removed.
 
 # FIXME after serialization support for torch.compile is added
-def get_checkpoint_dir(framework_model_dir, version, pipeline, subfolder, torch_inference):
-    return os.path.join(framework_model_dir, version, pipeline, subfolder)
+def get_checkpoint_dir(framework_model_dir, subfolder):
+    return os.path.join(framework_model_dir, subfolder)
 
 torch_inference_modes = ['default', 'reduce-overhead', 'max-autotune']
 # FIXME update callsites after serialization support for torch.compile is added
@@ -244,92 +244,6 @@ class BaseModel():
     def get_shape_dict(self, batch_size, image_height, image_width):
         return None
 
-    # Helper utility for ONNX export
-    def export_onnx(self, onnx_path, onnx_opt_path, onnx_opset, opt_image_height, opt_image_width, enable_lora_merge=False):
-        onnx_opt_graph = None
-        # Export optimized ONNX model (if missing)
-        if not os.path.exists(onnx_opt_path):
-            if not os.path.exists(onnx_path):
-                print(f"Exporting ONNX model: {onnx_path}")
-                model = self.get_model()
-                if enable_lora_merge:
-                    model = merge_loras(model, self.lora_dict, self.lora_alphas, self.lora_scales)
-                with torch.inference_mode(), torch.autocast("cuda"):
-                    inputs = self.get_sample_input(1, opt_image_height, opt_image_width)
-                    torch.onnx.export(model,
-                            inputs,
-                            onnx_path,
-                            export_params=True,
-                            opset_version=onnx_opset,
-                            do_constant_folding=True,
-                            input_names=self.get_input_names(),
-                            output_names=self.get_output_names(),
-                            dynamic_axes=self.get_dynamic_axes(),
-                    )
-            else:
-                print(f"[I] Found cached ONNX model: {onnx_path}")
-
-            print(f"Optimizing ONNX model: {onnx_opt_path}")
-            onnx_opt_graph = self.optimize(onnx.load(onnx_path))
-            if onnx_opt_graph.ByteSize() > 2147483648:
-                onnx.save_model(
-                    onnx_opt_graph,
-                    onnx_opt_path,
-                    save_as_external_data=True,
-                    all_tensors_to_one_file=True,
-                    convert_attribute=False)
-            else:
-                onnx.save(onnx_opt_graph, onnx_opt_path)
-        else:
-            print(f"[I] Found cached optimized ONNX model: {onnx_opt_path} ")
-
-    # Helper utility for weights map
-    def export_weights_map(self, onnx_opt_path, weights_map_path):
-        if not os.path.exists(weights_map_path):
-            onnx_opt_dir = os.path.dirname(onnx_opt_path)
-            onnx_opt_model = onnx.load(onnx_opt_path)
-            state_dict = self.get_model().state_dict()
-            # Create initializer data hashes
-            initializer_hash_mapping = {}
-            for initializer in onnx_opt_model.graph.initializer:
-                initializer_data = numpy_helper.to_array(initializer, base_dir=onnx_opt_dir).astype(np.float16)
-                initializer_hash = hash(initializer_data.data.tobytes())
-                initializer_hash_mapping[initializer.name] = (initializer_hash, initializer_data.shape)
-
-            weights_name_mapping = {}
-            weights_shape_mapping = {}
-            # set to keep track of initializers already added to the name_mapping dict
-            initializers_mapped = set()
-            for wt_name, wt in state_dict.items():
-                # get weight hash
-                wt = wt.cpu().detach().numpy().astype(np.float16)
-                wt_hash = hash(wt.data.tobytes())
-                wt_t_hash = hash(np.transpose(wt).data.tobytes())
-
-                for initializer_name, (initializer_hash, initializer_shape) in initializer_hash_mapping.items():
-                    # Due to constant folding, some weights are transposed during export
-                    # To account for the transpose op, we compare the initializer hash to the
-                    # hash for the weight and its transpose
-                    if wt_hash == initializer_hash or wt_t_hash == initializer_hash:
-                        # The assert below ensures there is a 1:1 mapping between
-                        # PyTorch and ONNX weight names. It can be removed in cases where 1:many
-                        # mapping is found and name_mapping[wt_name] = list()
-                        assert initializer_name not in initializers_mapped
-                        weights_name_mapping[wt_name] = initializer_name
-                        initializers_mapped.add(initializer_name)
-                        is_transpose = False if wt_hash == initializer_hash else True
-                        weights_shape_mapping[wt_name] = (initializer_shape, is_transpose)
-
-                # Sanity check: Were any weights not matched
-                if wt_name not in weights_name_mapping:
-                    print(f'[I] PyTorch weight {wt_name} not matched with any ONNX initializer')
-            print(f'[I] {len(weights_name_mapping.keys())} PyTorch weights were matched with ONNX initializers')
-            assert weights_name_mapping.keys() == weights_shape_mapping.keys()
-            with open(weights_map_path, 'w') as fp:
-                json.dump([weights_name_mapping, weights_shape_mapping], fp)
-        else:
-            print(f"[I] Found cached weights map: {weights_map_path} ")
-
     def optimize(self, onnx_graph):
         opt = Optimizer(onnx_graph, verbose=self.verbose)
         opt.info(self.name + ': original')
@@ -391,16 +305,8 @@ class CLIPModel(BaseModel):
             self.extra_output_names = ['hidden_states']
 
     def get_model(self, torch_inference=''):
-        clip_model_dir = get_checkpoint_dir(self.framework_model_dir, self.version, self.pipeline, self.subfolder, torch_inference)
-        if not os.path.exists(clip_model_dir):
-            model = CLIPTextModel.from_pretrained(self.path,
-                subfolder=self.subfolder,
-                use_safetensors=self.hf_safetensor,
-                use_auth_token=self.hf_token).to(self.device)
-            model.save_pretrained(clip_model_dir)
-        else:
-            print(f"[I] Load CLIP pytorch model from: {clip_model_dir}")
-            model = CLIPTextModel.from_pretrained(clip_model_dir).to(self.device)
+        clip_model_dir = get_checkpoint_dir(self.framework_model_dir, self.subfolder)
+        model = CLIPTextModel.from_pretrained(clip_model_dir).to(self.device)
         model = optimize_checkpoint(model, torch_inference)
         return model
 
@@ -476,7 +382,7 @@ class CLIPWithProjModel(CLIPModel):
         self.subfolder = subfolder
 
     def get_model(self, torch_inference=''):
-        clip_model_dir = get_checkpoint_dir(self.framework_model_dir, self.version, self.pipeline, self.subfolder, torch_inference)
+        clip_model_dir = get_checkpoint_dir(self.framework_model_dir, self.subfolder)
         if not os.path.exists(clip_model_dir):
             model = CLIPTextModelWithProjection.from_pretrained(self.path,
                 subfolder=self.subfolder,
@@ -583,7 +489,7 @@ class UNetModel(BaseModel):
             # FIXME - cache UNet2DConditionControlNetModel
             model = UNet2DConditionControlNetModel(unet_model, controlnets)
         else:
-            unet_model_dir = get_checkpoint_dir(self.framework_model_dir, self.version, self.pipeline, self.subfolder, torch_inference)
+            unet_model_dir = get_checkpoint_dir(self.framework_model_dir,self.subfolder)
             if not os.path.exists(unet_model_dir):
                 model = UNet2DConditionModel.from_pretrained(self.path,
                     subfolder=self.subfolder,
@@ -684,7 +590,6 @@ class UNetModel(BaseModel):
 
 class UNetXLModel(BaseModel):
     def __init__(self,
-        version,
         pipeline,
         device,
         hf_token,
@@ -714,21 +619,11 @@ class UNetXLModel(BaseModel):
         model_opts = {'variant': 'fp16', 'torch_dtype': torch.float16} if self.fp16 else {}
         # Use "xl-1.0" as a fixed version string for checkpoint directory naming.
         # self.pipeline is already the string name e.g. "XL_BASE"
-        unet_model_dir = get_checkpoint_dir(self.framework_model_dir, "xl-1.0", self.pipeline, self.subfolder, torch_inference)
-        if not os.path.exists(unet_model_dir):
-            model = UNet2DConditionModel.from_pretrained(self.sdxl_model_id, # Use hardcoded sdxl_model_id
-                subfolder=self.subfolder,
-                use_safetensors=self.hf_safetensor, # This is now True for SDXL
-                token=self.hf_token, # from_pretrained uses 'token' not 'use_auth_token' for newer transformers
-                **model_opts).to(self.device)
-            # Use default attention processor for ONNX export
-            if not torch_inference:
-                model.set_default_attn_processor()
-            model.save_pretrained(unet_model_dir)
-        else:
-            print(f"[I] Load UNet pytorch model from: {unet_model_dir}")
-            model_load_opts = {'torch_dtype': torch.float16} if self.fp16 else {}
-            model = UNet2DConditionModel.from_pretrained(unet_model_dir, **model_load_opts).to(self.device)
+        unet_model_dir = get_checkpoint_dir(self.framework_model_dir, self.subfolder)
+
+        print(f"[I] Load UNet pytorch model from: {unet_model_dir}")
+        model_load_opts = {'torch_dtype': torch.float16} if self.fp16 else {}
+        model = UNet2DConditionModel.from_pretrained(unet_model_dir, **model_load_opts).to(self.device)
         model = optimize_checkpoint(model, torch_inference)
         return model
 
@@ -799,7 +694,7 @@ class VAEModel(BaseModel):
         self.subfolder = 'vae'
 
     def get_model(self, torch_inference=''):
-        vae_decoder_model_path = get_checkpoint_dir(self.framework_model_dir, self.version, self.pipeline, self.subfolder, torch_inference)
+        vae_decoder_model_path = get_checkpoint_dir(self.framework_model_dir, self.subfolder)
         if not os.path.exists(vae_decoder_model_path):
             model = AutoencoderKL.from_pretrained(self.path,
                 subfolder=self.subfolder,
@@ -848,7 +743,7 @@ class VAEModel(BaseModel):
 class TorchVAEEncoder(torch.nn.Module):
     def __init__(self, version, pipeline, hf_token, device, path, framework_model_dir, hf_safetensor=False):
         super().__init__()
-        vae_encoder_model_dir = get_checkpoint_dir(framework_model_dir, version, pipeline, 'vae_encoder', '')
+        vae_encoder_model_dir = get_checkpoint_dir(framework_model_dir, 'vae_encoder')
         if not os.path.exists(vae_encoder_model_dir):
             self.vae_encoder = AutoencoderKL.from_pretrained(path,
                 subfolder='vae',

@@ -16,7 +16,7 @@
 #
 
 from cuda import cudart
-from diffusers import EulerDiscreteScheduler # Only EulerDiscreteScheduler is directly used now
+from diffusers import DPMSolverSinglestepScheduler
 # Other schedulers might be indirectly available via from_pretrained if get_path resolves to them,
 # but not directly instantiated.
 import inspect # Used by StableDiffusionPipeline.infer for scheduler.step
@@ -53,8 +53,8 @@ class StableDiffusionPipeline:
         self,
         pipeline_type=PIPELINE_TYPE.XL_BASE, # Simplified: Default to SDXL base
         max_batch_size=4, # Max batch size for SDXL, can be adjusted
-        denoising_steps=50,
-        guidance_scale=7.5,
+        denoising_steps=4,
+        guidance_scale=1,
         device='cuda',
         output_dir='.',
         hf_token=None,
@@ -131,8 +131,8 @@ class StableDiffusionPipeline:
         # For simplicity, we'll assume a compatible scheduler is passed or set up elsewhere if needed.
         # self.scheduler will be initialized before inference if required by the chosen flow.
         # Using hardcoded SDXL base model identifier for scheduler
-        self.scheduler = EulerDiscreteScheduler.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0", subfolder="scheduler")
-        print(f"[I] Using EulerDiscreteScheduler for SDXL.")
+        self.scheduler = DPMSolverSinglestepScheduler.from_pretrained(self.framework_model_dir, subfolder="scheduler")
+        #print(f"[I] Using EulerDiscreteScheduler for SDXL.")
 
 
         self.config = {}
@@ -282,7 +282,7 @@ class StableDiffusionPipeline:
         if 'clip' in self.stages:
             print(f"[I] Loading CLIPTextModel (text_encoder) from HuggingFace Hub for SDXL (subfolder: text_encoder)...")
             # Using hardcoded SDXL base model identifier
-            sdxl_base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+            sdxl_base_model_id = self.framework_model_dir
             self.tokenizer = CLIPTokenizer.from_pretrained(sdxl_base_model_id, subfolder="tokenizer", token=self.hf_token)
             self.torch_models['clip'] = CLIPTextModel.from_pretrained(
                 sdxl_base_model_id,
@@ -297,7 +297,7 @@ class StableDiffusionPipeline:
         if 'clip2' in self.stages:
             print(f"[I] Loading CLIPTextModelWithProjection (text_encoder_2) from HuggingFace Hub for SDXL (subfolder: text_encoder_2)...")
             # Using hardcoded SDXL base model identifier
-            sdxl_base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+            sdxl_base_model_id = self.framework_model_dir
             self.tokenizer2 = CLIPTokenizer.from_pretrained(sdxl_base_model_id, subfolder="tokenizer_2", token=self.hf_token)
             self.torch_models['clip2'] = CLIPTextModelWithProjection.from_pretrained(
                 sdxl_base_model_id,
@@ -312,7 +312,7 @@ class StableDiffusionPipeline:
         if 'vae' in self.stages:
             print(f"[I] Loading AutoencoderKL (VAE) from HuggingFace Hub for SDXL...")
             # Using hardcoded SDXL base model identifier
-            sdxl_base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+            sdxl_base_model_id = self.framework_model_dir
             self.torch_models['vae'] = AutoencoderKL.from_pretrained(
                 sdxl_base_model_id, # VAE is often part of the main model path for SDXL
                 subfolder="vae",
@@ -324,7 +324,7 @@ class StableDiffusionPipeline:
 
 
         # Load UNetXL TensorRT Engine
-        models_args = {'version': self.version, 'pipeline': self.pipeline_type, 'device': self.device,
+        models_args = {'pipeline': self.pipeline_type, 'device': self.device,
             'hf_token': self.hf_token, 'verbose': self.verbose, 'framework_model_dir': framework_model_dir,
             'max_batch_size': self.max_batch_size}
 
