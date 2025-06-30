@@ -16,7 +16,7 @@
 #
 
 from cuda import cudart
-from diffusers import DPMSolverSinglestepScheduler
+from diffusers.schedulers import DPMSolverSinglestepScheduler
 # Other schedulers might be indirectly available via from_pretrained if get_path resolves to them,
 # but not directly instantiated.
 import inspect # Used by StableDiffusionPipeline.infer for scheduler.step
