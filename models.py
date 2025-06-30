@@ -37,7 +37,6 @@ from transformers import (
     CLIPTextModelWithProjection,
     CLIPTokenizer
 )
-from utilities import merge_loras
 
 class Optimizer():
     def __init__(
